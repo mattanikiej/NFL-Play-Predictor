@@ -6,6 +6,8 @@ from sklearn.metrics import confusion_matrix
 from sklearn.metrics import precision_recall_fscore_support
 import datetime
 from uuid import uuid4
+import numpy as np
+import matplotlib.pyplot as plt
 
 class Model(nn.Module):
     def __init__(self, input_size, output_size, hidden_dim, n_layers):
@@ -65,17 +67,22 @@ def get_data():
 
     return train_test_split(features, labels)
 
-def train(dataloader, model, lf, opt):
+def train(dataloader, model, lf, opt, val_dataloader):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.train()
+    
     train_loss = []
     train_acc = []
+
+    valid_loss = []
+    valid_acc = []
 
     correct = 0
     total = 0
 
     now = datetime.datetime.now()
     for batch, (X, y) in enumerate(dataloader):
+        model.train()
+
         X = X.to(device)
         y = y.to(device)
 
@@ -93,26 +100,30 @@ def train(dataloader, model, lf, opt):
         total += y.size(0)
         correct += (predicted == y).sum().item()
 
-        if batch % 10 == 0:
+        if batch % 100 == 0:
             loss, current = loss.item(), batch * len(X)
+            accuracy = 100 * correct / total
+            v_loss, v_acc, _, _ = test(val_dataloader, model, lf)
             iters = 10 * len(X)
             then = datetime.datetime.now()
             iters /= (then - now).total_seconds()
-            print(f"loss: {loss:>6f} [{current:>5d}/{23000}] ({iters:.1f} its/sec)")
+            print(f"train loss: {loss:>6f} train accuracy: {accuracy:>6f} valid loss: {v_loss:>6f} valid accuracy: {v_acc:>6f} [{current:>5d}/{19000}] ({iters:.1f} its/sec)")
             now = then
             train_loss.append(loss)
-            accuracy = 100 * correct / total
             train_acc.append(accuracy)
+            valid_loss.append(v_loss)
+            valid_acc.append(v_acc)
 
-    return train_loss, train_acc
+    return np.mean(train_loss), np.mean(train_acc), np.mean(valid_loss), np.mean(valid_acc)
 
-def test(dataloader, model):
+def test(dataloader, model, lf):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     num_batches = 0
     model.eval()
     correct = 0
     total = 0
     test_acc = 0
+    test_loss = 0
     # get test labels and predictions
     test_labels = []
     pred_labels = []
@@ -120,6 +131,7 @@ def test(dataloader, model):
         X = X.to(device)
         y = y.to(device)
         pred = model(X)
+        test_loss = lf(torch.log(pred), y).item()
         # Get predictions
         _, predicted = torch.max(pred.data, 1)
         total += y.size(0)
@@ -131,8 +143,8 @@ def test(dataloader, model):
         pred_labels += predicted.float().tolist()
 
     test_acc /= num_batches
-    print(f"Test Accuracy: {test_acc:>0.1f}%\n") 
-    return test_acc, test_labels, pred_labels
+    # print(f"Test Accuracy: {test_acc:>0.1f}%\n") 
+    return test_loss, test_acc, test_labels, pred_labels
 
 if __name__ == "__main__":
 
@@ -142,15 +154,22 @@ if __name__ == "__main__":
 
     train_x, test_x, train_y, test_y = get_data()
 
+    train_x, valid_x, train_y, valid_y = train_test_split(train_x, train_y, test_size=0.2)
+
     train_data = PassRunDataset(train_x, train_y)
     train_dataloader = torch.utils.data.DataLoader(
-        train_data, batch_size=100, shuffle=True
+        train_data, batch_size=10, shuffle=True
+    )
+
+    valid_data = PassRunDataset(valid_x, valid_y)
+    valid_dataloader = torch.utils.data.DataLoader(
+        valid_data, batch_size=10, shuffle=True
     )
 
     model = Model(input_size=train_data.n_features(), output_size=2, hidden_dim=64, n_layers=4)
 
     # load in pretrained model if load is true
-    load = True
+    load = False
     if load:
         load_path = 'checkpoints/ad3bc'
         model.load_state_dict(torch.load(load_path))
@@ -166,22 +185,47 @@ if __name__ == "__main__":
 
     train_losses = []
     train_accs = []
-    
+
+    valid_losses = []
+    valid_accs = []
+
     train_model = not load # don't train model if one is loaded in
     if train_model:
         for i in range(n_epochs):
-            l, a = train(train_dataloader, model, lf, opt)
+            l, a, vl, va = train(train_dataloader, model, lf, opt, valid_dataloader)
+
+            print()
+            print(f"EPOCH: {i}/{n_epochs} train loss: {l:>6f} train accuracy: {a:>6f} valid loss: {vl:>6f} valid accuracy: {va:>6f}")
+            print()
 
             train_losses.append(l)
             train_accs.append(a)
+            valid_losses.append(vl)
+            valid_accs.append(va)
+
+
+
+        plt.plot(train_losses, label="Train Loss")
+        plt.plot(valid_losses, label="Validation Loss")
+        plt.legend()
+        plt.title(f"Loss Plots For Model: {session}")
+        plt.savefig(f"figures/loss_{session}")
+
+        plt.clf()
+
+        plt.plot(train_accs, label="Train Accuracy")
+        plt.plot(valid_accs, label="Validation Accuracy")
+        plt.legend()
+        plt.title(f"Accuracy Plots For Model: {session}")
+        plt.savefig(f"figures/acc_{session}")
 
 
     test_data = PassRunDataset(test_x, test_y)
     test_dataloader = torch.utils.data.DataLoader(
-        test_data, batch_size=100, shuffle=True
+        test_data, batch_size=10, shuffle=True
     )
 
-    acc, y, pred = test(test_dataloader, model)
+    acc, _, y, pred, = test(test_dataloader, model, lf)
     conf = confusion_matrix(y, pred)
     p, r, f, s = precision_recall_fscore_support(y, pred, pos_label=1, average='binary')
     
