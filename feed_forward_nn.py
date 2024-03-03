@@ -174,7 +174,7 @@ if __name__ == "__main__":
                 model.to(model.device)
 
                 # set training params
-                n_epochs = 100
+                n_epochs = 200
                 lr=1e-5
 
                 lf = nn.BCELoss()
