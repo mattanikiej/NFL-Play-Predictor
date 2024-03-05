@@ -17,15 +17,16 @@ class Model(nn.Module):
 
         self.layers = nn.Sequential(
           nn.Linear(input_size, hidden_dim),
-          nn.LeakyReLU(),
+          nn.ReLU(),
+          nn.Dropout(p=0.1)
         )
 
         for _ in range(n_layers):
             self.layers.append(nn.Linear(hidden_dim, hidden_dim))
-            self.layers.append(nn.LeakyReLU())
+            self.layers.append(nn.ReLU())
 
         self.layers.append(nn.Linear(hidden_dim, output_size))
-        self.layers.append(nn.Sigmoid())
+        # self.layers.append(nn.Sigmoid())
 
     def forward(self, x):
         x = self.layers(x)
@@ -65,7 +66,8 @@ def get_data(cols=None):
     return train_test_split(features, labels)
 
 def train(dataloader, model, lf, opt, val_dataloader):
-    
+    model.train()
+
     train_loss = []
     train_acc = []
 
@@ -74,21 +76,21 @@ def train(dataloader, model, lf, opt, val_dataloader):
 
     now = datetime.datetime.now()
     for batch, (X, y) in enumerate(dataloader):
-        model.train()
 
         X = X.to(model.device)
         y = y.to(model.device)
 
         # make some predictions and get the error
-        pred = torch.round(model(X)).squeeze()
-        loss = lf(pred.float(), y.float())
+        logits = model(X).squeeze()
+        pred = torch.round(torch.sigmoid(logits))
+        loss = lf(logits, y.float())
 
         # backpropogation
         opt.zero_grad()
         loss.backward()
         opt.step()
 
-        if batch % 100 == 0:
+        if batch % 10 == 0:
             loss, current = loss.item(), batch * len(X)
             correct = torch.eq(y, pred).sum().item() 
             accuracy = (correct / len(pred)) * 100 
@@ -107,9 +109,7 @@ def train(dataloader, model, lf, opt, val_dataloader):
 
 def test(dataloader, model, lf):
     num_batches = 0
-    model.eval()
     correct = 0
-    test_acc = []
     test_loss = []
     # get test labels and predictions
     test_labels = []
@@ -117,29 +117,28 @@ def test(dataloader, model, lf):
     for X, y in dataloader:
         X = X.to(model.device)
         y = y.to(model.device)
-        pred = torch.round(model(X)).squeeze()
-        loss = lf(pred.float(), y.float()).item()
+        logits = model(X).squeeze()
+        pred = torch.round(torch.sigmoid(logits))
+        loss = lf(logits, y.float()).item()
         test_loss.append(loss)
-        correct = torch.eq(y, pred).sum().item() 
-        accuracy = (correct / len(pred)) * 100 
-        test_acc.append(accuracy)
+        correct += torch.eq(y, pred).sum().item() 
         num_batches = num_batches + 1
         test_labels += y.float().tolist()
         pred_labels += pred.float().tolist()
 
+    test_acc = (correct / len(pred_labels)) * 100 
 
-    return np.mean(test_loss), np.mean(test_acc), test_labels, pred_labels
+    return np.mean(test_loss), test_acc, test_labels, pred_labels
 
 if __name__ == "__main__":
-    test_results = {"Model": [], "Accuracy": []}
-    hidden_dims = [32, 64, 128]
+    test_results = {"Model": [], "Accuracy": [], "HiddenDims":[], "HiddenLayers":[], "PValue": []}
+    hidden_dims = [64, 128, 256]
     hidden_layers = [1, 2, 3]
 
     c1 = ['down', 'no_huddle', 'goal_to_go', 'defteam_score', 'half_seconds_remaining', 'quarter_seconds_remaining', 'posteam_timeouts_remaining', 'score_differential', 'ydstogo', 'posteam_score', 'game_seconds_remaining', 'total_away_score']
     c2 = ['down', 'no_huddle', 'goal_to_go', 'defteam_score', 'half_seconds_remaining', 'quarter_seconds_remaining', 'posteam_timeouts_remaining', 'score_differential', 'ydstogo', 'posteam_score', 'game_seconds_remaining', 'total_away_score', 'away_timeouts_remaining', 'yardline_100', 'home_timeouts_remaining', 'drive']
-    cols = {'0.001': c1, '0.05': c2}
-    p_values = ['0.001', '0.05']
-
+    cols = {'0.001': c1, '0.05': c2, '1': None}
+    p_values = ['0.001', '0.05', '1']
     for i, hidden_dim in enumerate(hidden_dims):
         for j, n_layers in enumerate(hidden_layers):
             for k, p in enumerate(p_values):
@@ -147,19 +146,19 @@ if __name__ == "__main__":
                 # used to identify saved model in chekpoints/
                 session = str(uuid4())[:5]
 
-                c = cols[p]
+                c = cols[p] if p is not None else None
                 train_x, test_x, train_y, test_y = get_data(c)
 
                 train_x, valid_x, train_y, valid_y = train_test_split(train_x, train_y, test_size=0.2)
 
                 train_data = PassRunDataset(train_x, train_y)
                 train_dataloader = torch.utils.data.DataLoader(
-                    train_data, batch_size=10, shuffle=True
+                    train_data, batch_size=50, shuffle=True
                 )
 
                 valid_data = PassRunDataset(valid_x, valid_y)
                 valid_dataloader = torch.utils.data.DataLoader(
-                    valid_data, batch_size=10, shuffle=True
+                    valid_data, batch_size=50, shuffle=True
                 )
 
                 print(train_data.n_features())
@@ -174,11 +173,11 @@ if __name__ == "__main__":
                 model.to(model.device)
 
                 # set training params
-                n_epochs = 200
-                lr=1e-5
+                n_epochs = 25
+                lr=1e-3
 
-                lf = nn.BCELoss()
-                opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+                lf = nn.BCEWithLogitsLoss()
+                opt = torch.optim.Adam(model.parameters(), lr=lr)
 
                 train_losses = []
                 train_accs = []
@@ -219,13 +218,17 @@ if __name__ == "__main__":
 
                 test_data = PassRunDataset(test_x, test_y)
                 test_dataloader = torch.utils.data.DataLoader(
-                    test_data, batch_size=10, shuffle=True
+                    test_data, batch_size=50, shuffle=True
                 )
 
+                model.eval()
                 acc, _, y, pred, = test(test_dataloader, model, lf)
 
                 test_results['Model'].append(session)
                 test_results['Accuracy'].append(acc)
+                test_results['HiddenDims'].append(hidden_dim)
+                test_results['HiddenLayers'].append(n_layers)
+                test_results['PValue'].append(p)
 
                 conf = confusion_matrix(y, pred)
                 p, r, f, s = precision_recall_fscore_support(y, pred, pos_label=1, average='binary')
