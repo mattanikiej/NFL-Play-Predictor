@@ -98,7 +98,7 @@ def train(dataloader, model, lf, opt, val_dataloader):
             iters = 10 * len(X)
             then = datetime.datetime.now()
             iters /= (then - now).total_seconds()
-            print(f"train loss: {loss:>6f} train accuracy: {accuracy:>6f} valid loss: {v_loss:>6f} valid accuracy: {v_acc:>6f} [{current:>5d}/{19000}] ({iters:.1f} its/sec)")
+            print(f"train loss: {loss:>6f} train accuracy: {accuracy:>6f} valid loss: {v_loss:>6f} valid accuracy: {v_acc:>6f} [{current:>5d}/{17920}] ({iters:.1f} its/sec)")
             now = then
             train_loss.append(loss)
             train_acc.append(accuracy)
@@ -131,63 +131,73 @@ def test(dataloader, model, lf):
     return np.mean(test_loss), test_acc, test_labels, pred_labels
 
 if __name__ == "__main__":
-    test_results = {"Model": [], "Accuracy": [], "HiddenDims":[], "HiddenLayers":[], "PValue": []}
+    test_results = {"Model": [], 
+                    "Accuracy": [], 
+                    "HiddenDims":[], 
+                    "HiddenLayers":[], 
+                    "PValue": [], 
+                    "LearningRate": [], 
+                    "Epochs": []
+                    }
+    
     hidden_dims = [64, 128, 256]
     hidden_layers = [1, 2, 3]
+    learning_rates = [1e-2, 1e-3, 1e-4]
 
     c1 = ['down', 'no_huddle', 'goal_to_go', 'defteam_score', 'half_seconds_remaining', 'quarter_seconds_remaining', 'posteam_timeouts_remaining', 'score_differential', 'ydstogo', 'posteam_score', 'game_seconds_remaining', 'total_away_score']
     c2 = ['down', 'no_huddle', 'goal_to_go', 'defteam_score', 'half_seconds_remaining', 'quarter_seconds_remaining', 'posteam_timeouts_remaining', 'score_differential', 'ydstogo', 'posteam_score', 'game_seconds_remaining', 'total_away_score', 'away_timeouts_remaining', 'yardline_100', 'home_timeouts_remaining', 'drive']
     cols = {'0.001': c1, '0.05': c2, '1': None}
     p_values = ['0.001', '0.05', '1']
-    for i, hidden_dim in enumerate(hidden_dims):
-        for j, n_layers in enumerate(hidden_layers):
-            for k, p in enumerate(p_values):
-                # unique id number for this run
-                # used to identify saved model in chekpoints/
-                session = str(uuid4())[:5]
+    for hidden_dim in hidden_dims:
+        for n_layers in hidden_layers:
+            for p in p_values:
+                for lr in learning_rates:
+                    # unique id number for this run
+                    # used to identify saved model in chekpoints/
+                    session = str(uuid4())[:5]
 
-                c = cols[p] if p is not None else None
-                train_x, test_x, train_y, test_y = get_data(c)
+                    c = cols[p]
+                    train_x, test_x, train_y, test_y = get_data(c)
 
-                train_x, valid_x, train_y, valid_y = train_test_split(train_x, train_y, test_size=0.2)
+                    train_x, valid_x, train_y, valid_y = train_test_split(train_x, train_y, test_size=0.2)
 
-                train_data = PassRunDataset(train_x, train_y)
-                train_dataloader = torch.utils.data.DataLoader(
-                    train_data, batch_size=50, shuffle=True
-                )
+                    train_data = PassRunDataset(train_x, train_y)
+                    train_dataloader = torch.utils.data.DataLoader(
+                        train_data, batch_size=256, shuffle=True
+                    )
 
-                valid_data = PassRunDataset(valid_x, valid_y)
-                valid_dataloader = torch.utils.data.DataLoader(
-                    valid_data, batch_size=50, shuffle=True
-                )
+                    valid_data = PassRunDataset(valid_x, valid_y)
+                    valid_dataloader = torch.utils.data.DataLoader(
+                        valid_data, batch_size=256, shuffle=True
+                    )
 
-                print(train_data.n_features())
-                model = Model(input_size=train_data.n_features(), output_size=1, hidden_dim=hidden_dim, n_layers=n_layers)
+                    test_data = PassRunDataset(test_x, test_y)
+                    test_dataloader = torch.utils.data.DataLoader(
+                        test_data, batch_size=256, shuffle=True
+                    )
 
-                # load in pretrained model if load is true
-                load = False
-                if load:
-                    load_path = 'checkpoints/ad3bc'
-                    model.load_state_dict(torch.load(load_path))
-                
-                model.to(model.device)
+                    model = Model(input_size=train_data.n_features(), output_size=1, hidden_dim=hidden_dim, n_layers=n_layers)
+                    model.to(model.device)
 
-                # set training params
-                n_epochs = 25
-                lr=1e-3
+                    # set training params
+                    n_epochs = 100
 
-                lf = nn.BCEWithLogitsLoss()
-                opt = torch.optim.Adam(model.parameters(), lr=lr)
+                    lf = nn.BCEWithLogitsLoss()
+                    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
 
-                train_losses = []
-                train_accs = []
+                    train_losses = []
+                    train_accs = []
 
-                valid_losses = []
-                valid_accs = []
+                    valid_losses = []
+                    valid_accs = []
 
-                train_model = not load # don't train model if one is loaded in
-                if train_model:
+                    early_acc = 0
+                    early_stop = False
+                    epochs_trained = 0
                     for i in range(n_epochs):
+
+                        epochs_trained += 1
+
                         l, a, vl, va = train(train_dataloader, model, lf, opt, valid_dataloader)
 
                         print()
@@ -199,11 +209,24 @@ if __name__ == "__main__":
                         valid_losses.append(vl)
                         valid_accs.append(va)
 
+                        # initialize early stopping
+                        if i == 0:
+                            early_acc = va
+
+                        # stop if accuracy has no improved in 5 epochs
+                        if i % 5 == 0 and i != 0:
+                            early_stop = early_acc > va
+                            early_acc = va
+
+                        if early_stop:
+                            break
+
+
                     plt.plot(train_losses, label="Train Loss")
                     plt.plot(valid_losses, label="Validation Loss")
                     plt.legend()
                     plt.title(f"Loss Plots For Model: {session}")
-                    plt.savefig(f"figures/loss_{session}_{n_layers}_{hidden_dim}_{p}.png")
+                    plt.savefig(f"figures/loss_{session}_{n_layers}_{hidden_dim}_{p}_{lr}.png")
 
                     plt.clf()
 
@@ -211,34 +234,27 @@ if __name__ == "__main__":
                     plt.plot(valid_accs, label="Validation Accuracy")
                     plt.legend()
                     plt.title(f"Accuracy Plots For Model: {session}")
-                    plt.savefig(f"figures/acc_{session}_{n_layers}_{hidden_dim}_{p}.png")
+                    plt.savefig(f"figures/acc_{session}_{n_layers}_{hidden_dim}_{p}_{lr}.png")
 
                     plt.clf()
 
+                    model.eval()
+                    _, acc, y, pred, = test(test_dataloader, model, lf)
 
-                test_data = PassRunDataset(test_x, test_y)
-                test_dataloader = torch.utils.data.DataLoader(
-                    test_data, batch_size=50, shuffle=True
-                )
+                    test_results['Model'].append(session)
+                    test_results['Accuracy'].append(acc)
+                    test_results['HiddenDims'].append(hidden_dim)
+                    test_results['HiddenLayers'].append(n_layers)
+                    test_results['PValue'].append(p)
+                    test_results['LearningRate'].append(lr)
+                    test_results['Epochs'].append(epochs_trained)
 
-                model.eval()
-                acc, _, y, pred, = test(test_dataloader, model, lf)
+                    conf = confusion_matrix(y, pred)
+                    pr, r, f, s = precision_recall_fscore_support(y, pred, pos_label=1, average='binary')
 
-                test_results['Model'].append(session)
-                test_results['Accuracy'].append(acc)
-                test_results['HiddenDims'].append(hidden_dim)
-                test_results['HiddenLayers'].append(n_layers)
-                test_results['PValue'].append(p)
+                    print("Precision: {:.3f} Recall: {:.3f} F1-Score: {:.3f}".format(pr, r, f))
+                    print(conf)
 
-                conf = confusion_matrix(y, pred)
-                p, r, f, s = precision_recall_fscore_support(y, pred, pos_label=1, average='binary')
-                
-
-                print("Precision: {:.3f} Recall: {:.3f} F1-Score: {:.3f}".format(p, r, f))
-                print(conf)
-
-                save = not load # save new model if one was not loaded in
-                if save:
                     save_path = f'checkpoints/{session}'
                     torch.save(model.state_dict(), save_path)
 
